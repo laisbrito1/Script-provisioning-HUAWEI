@@ -1,0 +1,96 @@
+import pandas as pd
+from netmiko import ConnectHandler
+import time
+import getpass
+import re
+
+
+user = input('Digite o seu username: ')
+password = getpass.getpass('Digite a sua senha do Servidor: ')
+password_olt = getpass.getpass('Digite a sua senha da OLT: ')
+linux = {
+    'device_type': 'linux',
+    'ip': 'xxx.xxx.xx.xxx', 
+    'username': user,
+    'password': password,
+    'port': 22,
+    'verbose': True,
+}
+OLT_IP = input('Digite o DNS ou IP da OLT: ')
+frame = '0'
+slot = '1'
+
+df = pd.read_excel('example.xlsx') 
+
+# Conectar à OLT
+try:
+    connection = ConnectHandler(**linux)
+    print("Conexão estabelecida com sucesso!")
+    # Execute initial SSH connection
+    connection.send_command_timing(f'ssh {OLT_IP}')
+    connection.send_command_timing('yes') 
+    connection.send_command_timing(password_olt)  # Autenticação
+    connection.send_command_timing("\n")
+    connection.send_command_timing("enable")
+    connection.send_command_timing("config")
+ 
+    for idx, row in df.iterrows():
+      
+        serial_number = row['SerialNumber'] 
+        onu_name = row['ONUName'] 
+        service_profile = row['ServiceProfile'] 
+        line_profile = row['LineProfile']  
+        pon = row['PON'] 
+        vlan_id = row['VLAN']  # Corrigido para colchetes
+        vlan_user = row['USERVLAN']  # Corrigido para colchetes
+        traffic = row['TRAFFIC'] 
+
+        commands = [
+            '',
+            '',
+            f'interface gpon {frame}/{slot}',
+            f'ont add {pon}',  # A ONU será adicionada
+            f'sn-auth {serial_number}',
+            f'omci ont-lineprofile-id {line_profile}',
+            f'ont-srvprofile-id {service_profile}',
+            f'desc {onu_name}',
+            '',
+            '',
+            f'quit',
+            f'display current-configuration | include {onu_name}',
+            '',
+        ]
+
+      
+        for command in commands:
+            print(f"Executando comando: {command}")
+            output = connection.send_command_timing(command)
+            print(output)
+            time.sleep(1) 
+
+        # Capturar o ID da ONU a partir da saída
+        match = re.search(r'ont add (\d+) (\d+)', output)
+        if match:
+
+            pon_id = match.group(2)  # O segundo número é o ID da ONU
+
+
+        print(f"ONU {onu_name} provisionada com sucesso!")
+
+        # Comandos para criar o service port
+        service_port_commands = [
+            f"service-port vlan {vlan_id} gpon {frame}/{slot}/{pon} ont {pon_id} gemport 1 multi-service user-vlan {vlan_user} tag-transform translate inbound",
+            f"traffic-table index {traffic} outbound traffic-table index {traffic}",
+        ]
+
+        for sp_command in service_port_commands:
+            print(f"Executando comando de service port: {sp_command}")
+            output = connection.send_command_timing(sp_command)
+            print(output)
+            time.sleep(1)
+
+        print(f"Service port para a ONU {onu_name} criado com sucesso!")
+except Exception as e:
+    print(f"Erro ao conectar ou executar comandos: {e}")
+finally:
+    connection.disconnect()
